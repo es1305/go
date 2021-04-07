@@ -1,11 +1,10 @@
 # Custom files
-*.bak
-variables.*
-**/.vscode/*
-key.*
-tmp/*
 .*
 !.gitignore
+*.bak
+key.*
+tmp/*
+variables.*
 
 ### Ansible ###
 *.retry
