@@ -24,10 +24,10 @@ type Product struct {
 
 type User struct {
 	Id       int
+	Name     string
 	Email    string
 	Password string
-	Role     int
-	Status   bool
+	Admin    bool
 }
 
 type Products struct {
@@ -49,9 +49,11 @@ func main() {
 	defer db.Close()
 
 	http.HandleFunc("/v1/products/", getProducts)
-	http.HandleFunc("/v1/products/add", addProduct)
+	http.HandleFunc("/v1/products/add/:id", addProduct)
 	http.HandleFunc("/v1/user/add", addUser)
+	http.HandleFunc("/v1/user/delete/:id", delUser)
 	http.HandleFunc("/v1/user/get_token", getToken)
+
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -81,36 +83,45 @@ func getProducts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Same for Product update
 func addProduct(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method Not Allowed", 405)
 	} else {
-		decoder := json.NewDecoder(r.Body)
-		var g_product Product
+		x_token := r.Header.Get("X-API-TOKEN")
+		query := fmt.Sprintf("select u.role from sessions s left join users u on u.id = s.user_id where s.token = '%s' and ((s.added + interval '1h') > now()) and u.role = 1", x_token)
+		row := db.QueryRow(query)
+		var id int
+		err := row.Scan(&id)
 
-		err := decoder.Decode(&g_product)
 		if err != nil {
-			panic(err)
-		}
+			http.Error(w, "Not Allowed", 401)
+		} else {
+			decoder := json.NewDecoder(r.Body)
+			var g_product Product
+			err := decoder.Decode(&g_product)
 
-		query := fmt.Sprintf("INSERT INTO products(name, description, balance, discount, category) VALUES('%s', '%s', %d, %d, %d) RETURNING id", g_product.Name, g_product.Description, g_product.Balance, g_product.Discount, g_product.Category)
-
-		fmt.Println("# INSERT QUERY: %s", query)
-
-		rows, err := db.Query(query)
-		if err != nil {
-			panic(err)
-		}
-
-		for rows.Next() {
-			var id int
-			err = rows.Scan(&id)
 			if err != nil {
 				panic(err)
 			}
-			fmt.Fprintf(w, "{\"id\":%d}", id)
-		}
 
+			query := fmt.Sprintf("INSERT INTO products(name, description, balance, discount, category) VALUES('%s', '%s', %d, %d, %d) RETURNING id", g_product.Name, g_product.Description, g_product.Balance, g_product.Discount, g_product.Category)
+
+			rows, err := db.Query(query)
+			if err != nil {
+				panic(err)
+			}
+
+			for rows.Next() {
+				var id int
+				err = rows.Scan(&id)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Fprintf(w, "{\"id\":%d}", id)
+			}
+
+		}
 	}
 }
 
@@ -128,8 +139,6 @@ func addUser(w http.ResponseWriter, r *http.Request) {
 
 		query := fmt.Sprintf("INSERT INTO users (email, password, role, status) VALUES ('%s', '%s', %d, %t) RETURNING id", g_user.Email, g_user.Password, g_user.Role, g_user.Status)
 
-		fmt.Println("# INSERT QUERY: %s", query)
-
 		rows, err := db.Query(query)
 		if err != nil {
 			panic(err)
@@ -142,53 +151,6 @@ func addUser(w http.ResponseWriter, r *http.Request) {
 				panic(err)
 			}
 			fmt.Fprintf(w, "{\"id\":%d}", id)
-		}
-	}
-}
-
-func getToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method Not Allowed", 405)
-	} else {
-		decoder := json.NewDecoder(r.Body)
-		var g_user User
-
-		err := decoder.Decode(&g_user)
-		if err != nil {
-			panic(err)
-		}
-
-		query := fmt.Sprintf("select id from users where email = '%s' and password = '%s' and status", g_user.Email, g_user.Password)
-
-		fmt.Println("# INSERT QUERY: %s", query)
-
-		row := db.QueryRow(query)
-
-		var id int
-		err = row.Scan(&id)
-		if err != nil {
-			http.Error(w, "User Not Found", 403)
-		} else {
-			query := fmt.Sprintf("select token from sessions where user_id = %d and ((added + interval '1h') > now())", id)
-			fmt.Println("# select from sessions where user_id = %d and ((added + interval '1h') > now())", id)
-			row := db.QueryRow(query)
-
-			var token string
-			err = row.Scan(&token)
-			if err != nil {
-				token := uuid.Must(uuid.NewV4())
-				fmt.Println("# GOT TOKEN: %s", token)
-				query := fmt.Sprintf("INSERT INTO sessions (user_id, token) VALUES (%d, '%s')", id, token)
-				_, err := db.Exec(query)
-				if err != nil {
-					http.Error(w, "Internal Error", 500)
-				} else {
-					fmt.Fprintf(w, "{\"token\": %s}", token)
-				}
-			} else {
-				fmt.Fprintf(w, "{\"token\":\"%s\"}", token)
-			}
-
 		}
 	}
 }
@@ -220,6 +182,49 @@ func delUser(w http.ResponseWriter, r *http.Request) {
 			} else {
 				fmt.Fprintf(w, "User was successfully removed")
 			}
+		}
+	}
+}
+
+func getToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method Not Allowed", 405)
+	} else {
+		decoder := json.NewDecoder(r.Body)
+		var g_user User
+
+		err := decoder.Decode(&g_user)
+		if err != nil {
+			panic(err)
+		}
+
+		query := fmt.Sprintf("select id from users where email = '%s' and password = '%s' and status", g_user.Email, g_user.Password)
+
+		row := db.QueryRow(query)
+
+		var id int
+		err = row.Scan(&id)
+		if err != nil {
+			http.Error(w, "User Not Found", 403)
+		} else {
+			query := fmt.Sprintf("select token from sessions where user_id = %d and ((added + interval '1h') > now())", id)
+			row := db.QueryRow(query)
+
+			var token string
+			err = row.Scan(&token)
+			if err != nil {
+				token := uuid.NewV4()
+				query := fmt.Sprintf("INSERT INTO sessions (user_id, token) VALUES (%d, '%s')", id, token)
+				_, err := db.Exec(query)
+				if err != nil {
+					http.Error(w, "Internal Error", 500)
+				} else {
+					fmt.Fprintf(w, "{\"token\": %s}", token)
+				}
+			} else {
+				fmt.Fprintf(w, "{\"token\":\"%s\"}", token)
+			}
+
 		}
 	}
 }
